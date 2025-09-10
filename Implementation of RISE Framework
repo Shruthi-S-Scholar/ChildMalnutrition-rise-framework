@@ -1,0 +1,686 @@
+MI+XGBoost
+import pandas as pd
+import numpy as np
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.model_selection import StratifiedKFold
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# Load data
+df = pd.read_csv('Random_forest_clear1.csv')
+
+# Define features and target
+features = [
+    'Gender_code', 'Child_Age_Code', 'Child_MUAC', 'Weight', 'Height', 'BirthWeight_Code',
+    'Breast_Feeding_Code', 'Mother_Age_Code', 'Mother_Weight', 'Mother_Height_in_CM',
+    'BMI_Code', 'MUAC_Code', 'Education_coding', 'Working_Code', 'Total_Child',
+    'Child_order', 'FP_code', 'Food_Type', 'Caste', 'Residence_coding',
+    'Ratoncard_code', 'Bottle_Feed_Code'
+]
+target = 'Malnourished'
+
+X = df[features]
+y = df[target]
+
+# Step 1: MI feature scores
+mi_scores = mutual_info_classif(X, y, random_state=42)
+mi_df = pd.DataFrame({'Feature': features, 'MI_Score': mi_scores}).sort_values(by='MI_Score', ascending=False)
+
+# Select top features for training
+top_mi_features = mi_df['Feature'][:15].tolist()
+
+# Step 2: Cross-validation setup
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+model = XGBClassifier(eval_metric='logloss', random_state=42)
+
+# Store results
+acc_scores, prec_scores, rec_scores, f1_scores = [], [], [], []
+
+for train_idx, test_idx in cv.split(X, y):
+    X_train, X_test = X.iloc[train_idx][top_mi_features], X.iloc[test_idx][top_mi_features]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    
+    acc_scores.append(accuracy_score(y_test, y_pred))
+    prec_scores.append(precision_score(y_test, y_pred, zero_division=0))
+    rec_scores.append(recall_score(y_test, y_pred, zero_division=0))
+    f1_scores.append(f1_score(y_test, y_pred, zero_division=0))
+
+# Function to compute mean + 95% CI
+def mean_ci(scores):
+    mean = np.mean(scores)
+    se = np.std(scores, ddof=1) / np.sqrt(len(scores))
+    ci = 1.96 * se
+    return mean, mean - ci, mean + ci
+
+# Build results table
+results = {
+    "Metric": ["Accuracy", "Precision", "Recall", "F1-score"],
+    "Mean": [],
+    "95% CI Lower": [],
+    "95% CI Upper": []
+}
+
+for scores in [acc_scores, prec_scores, rec_scores, f1_scores]:
+    mean, lower, upper = mean_ci(scores)
+    results["Mean"].append(round(mean, 4))
+    results["95% CI Lower"].append(round(lower, 4))
+    results["95% CI Upper"].append(round(upper, 4))
+
+results_df = pd.DataFrame(results)
+print("\nUnified Performance Table with 95% CI (MI + XGBoost):")
+print(results_df)
+
+# Step 3: Feature importance from final model
+model.fit(X[top_mi_features], y)
+xgb_mi_importance = pd.DataFrame({
+    'Feature': top_mi_features,
+    'XGB_Importance': model.feature_importances_
+}).sort_values(by='XGB_Importance', ascending=False)
+
+print("\nTop Feature Importances (MI + XGBoost):")
+print(xgb_mi_importance)
+
+CHI2+XGBoost
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.feature_selection import SelectKBest, chi2
+from sklearn.model_selection import StratifiedKFold
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# Load dataset
+df = pd.read_csv('Random_forest_clear1.csv')
+
+# Define features and target
+features = [
+    'Gender_code', 'Child_Age_Code', 'Child_MUAC', 'Weight', 'Height', 'BirthWeight_Code',
+    'Breast_Feeding_Code', 'Mother_Age_Code', 'Mother_Weight', 'Mother_Height_in_CM',
+    'BMI_Code', 'MUAC_Code', 'Education_coding', 'Working_Code', 'Total_Child',
+    'Child_order', 'FP_code', 'Food_Type', 'Caste', 'Residence_coding',
+    'Ratoncard_code', 'Bottle_Feed_Code'
+]
+target = 'Malnourished'
+
+X = df[features]
+y = df[target]
+
+# Step 1: Normalize features (Chi² requires non-negative input)
+scaler = MinMaxScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Step 2: Apply Chi² scoring
+chi2_selector = SelectKBest(score_func=chi2, k=15)   # top 15 features
+X_chi2 = chi2_selector.fit_transform(X_scaled, y)
+chi2_features = [features[i] for i in chi2_selector.get_support(indices=True)]
+
+print("Top Chi² features:", chi2_features)
+
+# Step 3: Cross-validation setup
+kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+metrics = {"accuracy": [], "precision": [], "recall": [], "f1": []}
+
+for train_idx, test_idx in kf.split(X_chi2, y):
+    X_train, X_test = X_chi2[train_idx], X_chi2[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    model = XGBClassifier(eval_metric='logloss', random_state=42)
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+
+    metrics["accuracy"].append(accuracy_score(y_test, y_pred))
+    metrics["precision"].append(precision_score(y_test, y_pred, zero_division=0))
+    metrics["recall"].append(recall_score(y_test, y_pred, zero_division=0))
+    metrics["f1"].append(f1_score(y_test, y_pred, zero_division=0))
+
+# Step 4: Mean & 95% CI
+results = {}
+for m, scores in metrics.items():
+    mean = np.mean(scores)
+    ci_low = mean - 1.96 * np.std(scores) / np.sqrt(len(scores))
+    ci_high = mean + 1.96 * np.std(scores) / np.sqrt(len(scores))
+    results[m] = (mean, ci_low, ci_high)
+
+# Step 5: Unified performance table
+perf_table = pd.DataFrame({
+    "Metric": results.keys(),
+    "Mean": [f"{results[m][0]:.4f}" for m in results],
+    "95% CI": [f"({results[m][1]:.4f}, {results[m][2]:.4f})" for m in results]
+})
+
+print("\nUnified Performance Table (Chi² + XGBoost):")
+print(perf_table)
+print("\n")
+# Get feature importance from the fitted model
+import pandas as pd
+
+# assuming 'model' is your trained XGBClassifier
+importance = model.feature_importances_
+
+# Create dataframe
+feat_scores = pd.DataFrame({
+    'Feature': chi2_features,  # Chi² selected features
+    'Importance': importance
+}).sort_values(by='Importance', ascending=False)
+
+print(feat_scores)
+
+ANOVA+XGBOOST
+import numpy as np
+import pandas as pd
+from sklearn.feature_selection import f_classif
+from sklearn.model_selection import StratifiedKFold
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# Load dataset
+df = pd.read_csv('Random_forest_clear1.csv')
+
+# Define features and target
+features = [
+    'Gender_code', 'Child_Age_Code', 'Child_MUAC', 'Weight', 'Height', 'BirthWeight_Code',
+    'Breast_Feeding_Code', 'Mother_Age_Code', 'Mother_Weight', 'Mother_Height_in_CM',
+    'BMI_Code', 'MUAC_Code', 'Education_coding', 'Working_Code', 'Total_Child',
+    'Child_order', 'FP_code', 'Food_Type', 'Caste', 'Residence_coding',
+    'Ratoncard_code', 'Bottle_Feed_Code'
+]
+target = 'Malnourished'
+
+X = df[features]
+y = df[target]
+
+# Step 1: Compute ANOVA F-scores
+f_scores, _ = f_classif(X, y)
+anova_scores = pd.Series(f_scores, index=features).sort_values(ascending=False)
+
+# Step 2: Select top 15 ANOVA features
+top_15_anova_features = anova_scores.index[:15]
+X_anova = X[top_15_anova_features]
+
+# Step 3: Cross-validation with performance metrics
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+metrics = {'accuracy': [], 'precision': [], 'recall': [], 'f1': []}
+
+for train_idx, test_idx in cv.split(X_anova, y):
+    X_train, X_test = X_anova.iloc[train_idx], X_anova.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    model = XGBClassifier(eval_metric='logloss', random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    metrics['accuracy'].append(accuracy_score(y_test, y_pred))
+    metrics['precision'].append(precision_score(y_test, y_pred))
+    metrics['recall'].append(recall_score(y_test, y_pred))
+    metrics['f1'].append(f1_score(y_test, y_pred))
+
+# Step 4: Compute mean and 95% CI
+results = []
+for m, values in metrics.items():
+    mean = np.mean(values)
+    lower = np.percentile(values, 2.5)
+    upper = np.percentile(values, 97.5)
+    results.append([m, round(mean, 4), (round(lower, 4), round(upper, 4))])
+
+performance_df = pd.DataFrame(results, columns=['Metric', 'Mean', '95% CI'])
+
+print("\nUnified Performance Table (ANOVA + XGBoost):")
+print(performance_df)
+
+# Step 5: Feature importances from final model
+xgb_importances = pd.Series(model.feature_importances_, index=X_anova.columns).sort_values(ascending=False)
+final_result = pd.DataFrame({
+    'Feature': xgb_importances.index,
+    'XGBoost_Importance': xgb_importances.values
+}).reset_index(drop=True)
+
+print("\nTop Feature Importances (ANOVA + XGBoost):")
+print(final_result.head(15))
+
+ReliefF+XGBoost
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from xgboost import XGBClassifier
+from skrebate import ReliefF
+
+# Load data
+df = pd.read_csv('Random_forest_clear1.csv')
+
+# Define features and target
+features = [
+    'Gender_code', 'Child_Age_Code', 'Child_MUAC', 'Weight', 'Height', 'BirthWeight_Code',
+    'Breast_Feeding_Code', 'Mother_Age_Code', 'Mother_Weight', 'Mother_Height_in_CM',
+    'BMI_Code', 'MUAC_Code', 'Education_coding', 'Working_Code', 'Total_Child',
+    'Child_order', 'FP_code', 'Food_Type', 'Caste', 'Residence_coding',
+    'Ratoncard_code', 'Bottle_Feed_Code'
+]
+target = 'Malnourished'
+
+X = df[features]
+y = df[target]
+
+# Step 1: Normalize data for ReliefF
+scaler = MinMaxScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Step 2: Apply ReliefF
+relief = ReliefF(n_neighbors=100)
+relief.fit(X_scaled, y)
+relief_scores = pd.Series(relief.feature_importances_, index=features).sort_values(ascending=False)
+
+# Step 3: Select top 15 ReliefF features
+top_15_relief_features = relief_scores.index[:15]
+X_relief = pd.DataFrame(X_scaled, columns=features)[top_15_relief_features]
+
+# Step 4: Cross-validation with XGBoost
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+metrics = {'accuracy': [], 'precision': [], 'recall': [], 'f1': []}
+
+for train_idx, test_idx in cv.split(X_relief, y):
+    X_train, X_test = X_relief.iloc[train_idx], X_relief.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    model = XGBClassifier(eval_metric='logloss', random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    metrics['accuracy'].append(accuracy_score(y_test, y_pred))
+    metrics['precision'].append(precision_score(y_test, y_pred))
+    metrics['recall'].append(recall_score(y_test, y_pred))
+    metrics['f1'].append(f1_score(y_test, y_pred))
+
+# Step 5: Compute mean and 95% CI for performance metrics
+results = []
+for m, values in metrics.items():
+    mean = np.mean(values)
+    lower = np.percentile(values, 2.5)
+    upper = np.percentile(values, 97.5)
+    results.append([m, round(mean, 4), (round(lower, 4), round(upper, 4))])
+
+performance_df = pd.DataFrame(results, columns=['Metric', 'Mean', '95% CI'])
+
+print("\nUnified Performance Table (ReliefF + XGBoost):")
+print(performance_df)
+
+# Step 6: Feature importances from final model
+xgb_importances = pd.Series(model.feature_importances_, index=X_relief.columns).sort_values(ascending=False)
+relief_result = pd.DataFrame({
+    'Feature': xgb_importances.index,
+    'XGBoostR_Importance': xgb_importances.values
+}).reset_index(drop=True)
+
+print("\nTop Feature Importances (ReliefF + XGBoost):")
+print(relief_result.head(15))
+
+Frequency Boost caiculation 
+from collections import Counter
+import pandas as pd
+
+# Example top 10 lists (replace with actual top 10 DataFrames or lists)
+top_mi_xgb = list(xgb_mi_importance['Feature'].head(10))
+top_chi2_xgb = list(feat_scores['Feature'].head(10))
+top_anova_xgb = list(final_result['Feature'].head(10))
+top_relieff_xgb = list(XGBoostR_Importance['Feature'].head(10))
+
+# Combine all selected top-10 features
+all_top_features = top_mi_xgb + top_chi2_xgb + top_anova_xgb + top_relieff_xgb
+
+# Count frequency
+frequency_counter = Counter(all_top_features)
+
+# Prepare a master list of all possible features
+all_features = [
+    'Gender_code', 'Child_Age_Code', 'Child_MUAC', 'Weight', 'Height',
+    'BirthWeight_Code', 'Breast_Feeding_Code', 'Mother_Age_Code', 'Mother_Weight',
+    'Mother_Height_in_CM', 'BMI_Code', 'MUAC_Code', 'Education_coding',
+    'Working_Code', 'Total_Child', 'Child_order', 'FP_code', 'Food_Type',
+    'Caste', 'Residence_coding', 'Ratoncard_code', 'Bottle_Feed_Code'
+]
+
+# Map frequency to DataFrame
+freq_boost_df = pd.DataFrame({'Feature': all_features})
+freq_boost_df['Frequency_Boost_Score'] = freq_boost_df['Feature'].map(frequency_counter).fillna(0).astype(int)
+
+# Optional: sort for readability
+freq_boost_df = freq_boost_df.sort_values(by='Frequency_Boost_Score', ascending=False).reset_index(drop=True)
+print(freq_boost_df)
+
+
+# For each method, get top 10 with boosting scores
+def print_top_with_boost(method_name, top_features_set):
+    df = pd.DataFrame({'Feature': list(top_features_set)})
+    df = df.merge(freq_boost_df, on='Feature', how='left')
+    df = df.sort_values(by='Frequency_Boost_Score', ascending=False).reset_index(drop=True)
+    print(f"\nTop 10 Features from {method_name} + Frequency Boost Score:\n")
+    print(df)
+
+# Print top features for each method
+print_top_with_boost("MI + XGBoost", top_mi_xgb)
+print_top_with_boost("Chi2 + XGBoost", top_chi2_xgb)
+print_top_with_boost("ANOVA + XGBoost", top_anova_xgb)
+print_top_with_boost("ReliefF + XGBoost", top_relieff_xgb)
+
+import pandas as pd
+from collections import Counter
+
+# Step 1: Top 10 sets already available
+# top_mi_xgb, top_chi2_xgb, top_anova_xgb, top_relieff_xgb
+
+# Step 2: Create DataFrames with method names
+mi_df     = pd.DataFrame({'MI_XGB': list(top_mi_xgb)})
+chi2_df   = pd.DataFrame({'Chi2_XGB': list(top_chi2_xgb)})
+anova_df  = pd.DataFrame({'ANOVA_XGB': list(top_anova_xgb)})
+relief_df = pd.DataFrame({'ReliefF_XGB': list(top_relieff_xgb)})
+
+# Step 3: Combine side-by-side
+comparison_df = pd.concat([mi_df, chi2_df, anova_df, relief_df], axis=1)
+
+# Step 4: Add Frequency Boost Score
+# Flatten all top 10s into one list and count frequency
+all_features = list(top_mi_xgb) + list(top_chi2_xgb) + list(top_anova_xgb) + list(top_relieff_xgb)
+frequency_counter = Counter(all_features)
+
+# Create score table
+boost_df = pd.DataFrame({'Feature': list(set(all_features))})
+boost_df['Frequency_Boost_Score'] = boost_df['Feature'].map(frequency_counter)
+
+# Step 5: Display final side-by-side table
+print("\n Top 10 Features from Each Method + Frequency Boosting Score (Side-by-Side):")
+print(comparison_df)
+print("\n Frequency Boosting Scores for All Top Features:")
+print(boost_df.sort_values(by='Frequency_Boost_Score', ascending=False).reset_index(drop=True))
+
+XGBoost Model Scoring 
+import numpy as np
+import pandas as pd
+from xgboost import XGBClassifier
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# 1. Load data
+df = pd.read_csv('Random_forest_clear1.csv')
+
+features = [
+    'Gender_code', 'Child_Age_Code', 'Child_MUAC', 'Weight', 'Height',
+    'BirthWeight_Code', 'Breast_Feeding_Code', 'Mother_Age_Code', 'Mother_Weight',
+    'Mother_Height_in_CM', 'BMI_Code', 'MUAC_Code', 'Education_coding',
+    'Working_Code', 'Total_Child', 'Child_order', 'FP_code', 'Food_Type',
+    'Caste', 'Residence_coding', 'Ratoncard_code', 'Bottle_Feed_Code'
+]
+target = 'Malnourished'
+
+X = df[features]
+y = df[target]
+
+# 2. Cross-validation setup
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+metrics = {'accuracy': [], 'precision': [], 'recall': [], 'f1': []}
+
+for train_idx, test_idx in cv.split(X, y):
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    model = XGBClassifier(n_estimators=100, eval_metric='logloss', random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    metrics['accuracy'].append(accuracy_score(y_test, y_pred))
+    metrics['precision'].append(precision_score(y_test, y_pred))
+    metrics['recall'].append(recall_score(y_test, y_pred))
+    metrics['f1'].append(f1_score(y_test, y_pred))
+
+# 3. Mean + 95% CI for metrics
+results = []
+for m, values in metrics.items():
+    mean = np.mean(values)
+    lower = np.percentile(values, 2.5)
+    upper = np.percentile(values, 97.5)
+    results.append([m, round(mean, 4), (round(lower, 4), round(upper, 4))])
+
+performance_df = pd.DataFrame(results, columns=['Metric', 'Mean', '95% CI'])
+print("\nUnified Performance Table (XGBoost):")
+print(performance_df)
+
+# 4. Train final model on full dataset for feature importance
+final_model = XGBClassifier(n_estimators=100, eval_metric='logloss', random_state=42)
+final_model.fit(X, y)
+
+# Feature importance for all features
+feature_importances = pd.DataFrame({
+    'Feature': features,
+    'Model_Importance': final_model.feature_importances_
+}).sort_values(by='Model_Importance', ascending=False).reset_index(drop=True)
+
+print("\nFeature Importances for All Variables:")
+print(feature_importances.round(4))
+
+Domain Ranking
+import numpy as np
+
+# Original domain ranks
+domain_ranks = {
+    'Gender_code': 6, 'Child_Age_Code': 6, 'Child_MUAC': 6, 'Weight': 6, 'Height': 6,
+    'BirthWeight_Code': 5, 'Breast_Feeding_Code': 5, 'Bottle_Feed_Code': 5,
+    'Mother_Weight': 4, 'Mother_Height_in_CM': 4, 'Mother_Age_Code': 4,
+    'BMI_Code': 4, 'MUAC_Code': 4, 'Total_Child': 3, 'Child_order': 3,
+    'Residence_coding': 2, 'Ratoncard_code': 2, 'Caste': 2, 'Food_Type': 2,
+    'Education_coding': 1, 'Working_Code': 1, 'FP_code': 1
+}
+
+# Convert to numpy array
+values = np.array(list(domain_ranks.values()), dtype=float)
+
+# Normalize
+min_val, max_val = values.min(), values.max()
+normalized_values = (values - min_val) / (max_val - min_val)
+
+# Replace 0 with 0.1
+normalized_domain_ranks = {k: (0.1 if v == 0 else float(v)) 
+                           for k, v in zip(domain_ranks.keys(), normalized_values)}
+
+print(normalized_domain_ranks)
+
+Normalizing Frequency Boost
+import pandas as pd
+
+# Example DataFrame
+freq_boost_df = pd.DataFrame({
+    'Feature': [
+        'Child_Age_Code', 'Weight', 'Child_order', 'Mother_Weight', 'Education_coding',
+        'MUAC_Code', 'BMI_Code', 'BirthWeight_Code', 'Child_MUAC', 'Gender_code',
+        'Food_Type', 'FP_code', 'Height', 'Mother_Age_Code', 'Residence_coding',
+        'Bottle_Feed_Code', 'Total_Child', 'Breast_Feeding_Code', 'Working_Code',
+        'Mother_Height_in_CM', 'Caste', 'Ratoncard_code'
+    ],
+    'Frequency_Boost_Score': [
+        4,4,4,4,3,3,3,2,2,2,2,2,1,1,1,1,1,0,0,0,0,0
+    ]
+})
+
+# Normalize by dividing by the maximum boost (4 in your case)
+max_boost = freq_boost_df['Frequency_Boost_Score'].max()
+freq_boost_df['Normalized_Boost'] = freq_boost_df['Frequency_Boost_Score'] / max_boost
+
+# Optional: sort for readability
+freq_boost_df = freq_boost_df.sort_values(by='Normalized_Boost', ascending=False).reset_index(drop=True)
+
+print(freq_boost_df)
+
+HyperParameter Tunener selection by implimenting Nested Validation
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.metrics import f1_score
+from sklearn.model_selection import train_test_split
+from xgboost import XGBClassifier
+
+# -----------------------------
+# Load data
+# -----------------------------
+df = pd.read_csv('Random_forest_clear1.csv')
+
+features = [
+    'Gender_code', 'Child_Age_Code', 'Child_MUAC', 'Weight', 'Height', 'BirthWeight_Code',
+    'Breast_Feeding_Code', 'Mother_Age_Code', 'Mother_Weight', 'Mother_Height_in_CM',
+    'BMI_Code', 'MUAC_Code', 'Education_coding', 'Working_Code', 'Total_Child',
+    'Child_order', 'FP_code', 'Food_Type', 'Caste', 'Residence_coding',
+    'Ratoncard_code', 'Bottle_Feed_Code'
+]
+target = 'Malnourished'
+
+X = df[features]
+y = df[target]
+
+# -----------------------------
+# Define scores
+# -----------------------------
+domain_score = {'Gender_code': 1.0, 'Child_Age_Code': 1.0, 'Child_MUAC': 1.0, 'Weight': 1.0, 'Height': 1.0,
+                'BirthWeight_Code': 0.8, 'Breast_Feeding_Code': 0.8, 'Bottle_Feed_Code': 0.8, 'Mother_Weight': 0.6,
+                'Mother_Height_in_CM': 0.6, 'Mother_Age_Code': 0.6, 'BMI_Code': 0.6, 'MUAC_Code': 0.6,
+                'Total_Child': 0.4, 'Child_order': 0.4, 'Residence_coding': 0.2, 'Ratoncard_code': 0.2,
+                'Caste': 0.2, 'Food_Type': 0.2, 'Education_coding': 0.1, 'Working_Code': 0.1, 'FP_code': 0.1}
+
+model_scores = {
+    'Gender_code': 0.0453, 'Child_Age_Code': 0.0248, 'Child_MUAC': 0.0989, 'Weight': 0.1304,'Height': 0.0820,
+    'BirthWeight_Code': 0.0279,'Breast_Feeding_Code': 0.0969,'Bottle_Feed_Code': 0.0220,'Mother_Weight': 0.0485,
+    'Mother_Height_in_CM': 0.0443,'Mother_Age_Code': 0.0550, 'BMI_Code': 0.0443,'MUAC_Code': 0.0411,
+    'Total_Child': 0.0252,'Child_order': 0.0669,'Residence_coding': 0.0340,'Ratoncard_code': 0.0000,'Caste': 0.0139,
+    'Food_Type': 0.0539,'Education_coding': 0.0336,'Working_Code': 0.0000,'FP_code': 0.0112}
+
+frequency_boost = {'Child_Age_Code': 1.0, 'Weight': 1.0, 'Child_order': 1.0, 'Mother_Weight': 1.0,
+                   'MUAC_Code': 0.75, 'Education_coding': 0.75, 'Mother_Height_in_CM': 0.5, 'Food_Type': 0.5,
+                   'Child_MUAC': 0.5, 'Gender_code': 0.5, 'FP_code': 0.5, 'Mother_Age_Code': 0.5,
+                   'BirthWeight_Code': 0.25, 'Height': 0.25, 'Caste': 0.25, 'Bottle_Feed_Code': 0.25,
+                   'BMI_Code': 0.25, 'Total_Child': 0.25, 'Working_Code': 0.0, 'Breast_Feeding_Code': 0.0,
+                   'Residence_coding': 0.0, 'Ratoncard_code': 0.0}
+
+# -----------------------------
+# RISE Transformer
+# -----------------------------
+class RISEWeighting(BaseEstimator, TransformerMixin):
+    def __init__(self, domain_score, model_score, frequency_boost, alpha=0.1, beta=0.1, gamma=0.1):
+        self.domain_score = domain_score
+        self.model_score = model_score
+        self.frequency_boost = frequency_boost
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        features = X.columns
+        weights = []
+        for f in features:
+            d = self.domain_score.get(f, 0)
+            m = self.model_score.get(f, 0)
+            fr = self.frequency_boost.get(f, 0)
+            score = self.alpha * d + self.beta * m + self.gamma * fr
+            weights.append(score)
+        weights = np.array(weights)
+        weights = np.where(weights == 0, 1, weights)  # avoid zero scaling
+        return X * weights
+
+# -----------------------------
+# Pipeline
+# -----------------------------
+pipeline = Pipeline([
+    ("rise", RISEWeighting(domain_score, model_scores, frequency_boost)),
+    ("scaler", StandardScaler()),
+    ("clf", LogisticRegression(max_iter=5000, solver="lbfgs"))
+])
+
+# -----------------------------
+# Parameter Grid
+# -----------------------------
+param_grid = {
+    "rise__alpha": [ 0.1,0.2, 0.3,0.4,0.5, 0.6,0.7,0.9,0.9, 1.0],
+    "rise__beta": [ 0.1,0.2, 0.3,0.4,0.5, 0.6,0.7,0.9,0.9, 1.0],
+    "rise__gamma": [ 0.1,0.2, 0.3,0.4,0.5, 0.6,0.7,0.9,0.9, 1.0]
+}
+
+# -----------------------------
+# Nested CV with reporting best params
+# -----------------------------
+outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+
+outer_scores = []
+best_params_list = []
+
+for train_idx, test_idx in outer_cv.split(X, y):
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    
+    grid = GridSearchCV(pipeline, param_grid, cv=inner_cv, scoring="f1_macro", n_jobs=-1)
+    grid.fit(X_train, y_train)
+    
+    best_params_list.append(grid.best_params_)
+    
+    y_pred = grid.predict(X_test)
+    f1 = f1_score(y_test, y_pred, average="macro")
+    outer_scores.append(f1)
+
+print("Nested CV mean F1:", np.mean(outer_scores))
+print("Best alpha, beta, gamma in each fold:")
+for i, params in enumerate(best_params_list):
+    print(f" Fold {i+1}: {params}")
+
+FINAL RISE Scores
+import pandas as pd
+
+# Create DataFrame with all features and their scores
+df = pd.DataFrame({
+    'Feature': [
+        'Gender_code','Child_Age_Code','Child_MUAC','Weight','Height','BirthWeight_Code',
+        'Breast_Feeding_Code','Bottle_Feed_Code','Mother_Weight','Mother_Height_in_CM',
+        'Mother_Age_Code','BMI_Code','MUAC_Code','Total_Child','Child_order',
+        'Residence_coding','Ratoncard_code','Caste','Food_Type','Education_coding',
+        'Working_Code','FP_code'
+    ],
+    'domain_score': [
+        1.0, 1.0, 1.0, 1.0, 1.0, 0.8, 0.8, 0.8, 0.6, 0.6, 0.6, 0.6, 0.6, 0.4, 0.4,
+        0.2, 0.2, 0.2, 0.2, 0.1, 0.1, 0.1
+    ],
+    'frequency_boost': [
+        0.5, 1.0, 0.5, 1.0, 0.25, 0.5, 0.0, 0.25, 1.0, 0.0, 0.25, 0.75, 0.75, 0.25, 1.0,
+        0.25, 0.0, 0.0, 0.5, 0.75, 0.0, 0.5
+    ],
+    'model_score': [
+        0.0453, 0.0248, 0.0989, 0.1304, 0.0820, 0.0279, 0.0969, 0.0220, 0.0485, 0.0443,
+        0.0550, 0.0443, 0.0411, 0.0252, 0.0669, 0.0340, 0.0000, 0.0139, 0.0539, 0.0336,
+        0.0000, 0.0112
+    ]
+})
+
+# Set weights
+alpha = 0.1
+beta = 0.1
+gamma = 0.1
+
+# Calculate RISE score
+df['RISE_Score'] = alpha * df['domain_score'] + beta * df['model_score'] + gamma * df['frequency_boost']
+
+# Sort by RISE score descending
+df = df.sort_values(by='RISE_Score', ascending=False).reset_index(drop=True)
+
+# Print full table
+print("\nFeature Scores Table (Domain, Model, Frequency Boost, RISE):")
+print(df[['Feature','domain_score','model_score','frequency_boost','RISE_Score']].round(4))
+
+
+
